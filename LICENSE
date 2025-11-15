@@ -1,0 +1,246 @@
+# XRDAP-SWD 硬件许可协议 / XRDAP-SWD Hardware License v1
+
+> **重要说明 / Important Note**  
+> 本许可证为「源代码可见但具限制性」的硬件许可协议，**不属于 OSI/FSF 所定义的开源许可证**。  
+> This License is a **source-available, restrictive hardware license** and is **NOT** an OSI/FSF-approved open-source license.
+
+---
+
+## 0. 适用范围 / Scope
+
+**中文（具法律效力的一般以本中文条款为准）**
+
+本许可证适用于许可方公开的 SWD 前端硬件设计，包括但不限于：
+
+- SWD 前端的 HDL / Verilog 源代码；
+- 原理图设计文件；
+- PCB 布局文件；
+- 与上述设计直接相关的文档与设计文件。
+
+上述内容统称为「设计文件」。
+
+**English (for reference only; Chinese prevails)**
+
+This License applies to the SWD frontend hardware design released by the Licensor, including but not limited to:
+
+- HDL / Verilog source code of the SWD frontend;
+- Schematic design files;
+- PCB layout files;
+- Documentation and design files directly related to the above.
+
+All of the above are collectively referred to as the “Design Files”.
+
+---
+
+## 1. 未修改版本的免费个人 / 商业使用 / Free Use of Unmodified Versions
+
+**中文**
+
+1.1 对于设计文件的「未修改版本」，许可方在此明确说明：
+
+- **任何个人或商业主体，在满足本许可证其它条款的前提下，均可免费使用、复制、研究和分发未修改版本，无需取得额外的单独授权或付费许可。**
+
+1.2 在不属于第 4 条规定的禁止对象和禁止用途的前提下，你可以：
+
+- 将未修改版本集成到自己的产品中（包括商业产品）；
+- 基于未修改版本制造、使用、销售硬件产品；
+
+前提是：
+
+- (a) 保留许可方的全部版权声明和本许可证全文；  
+- (b) 对外分发未修改版本时，仅在本许可证条款下分发，不得附加进一步的限制。
+
+**English (reference only)**
+
+1.1 For the **Unmodified Version** of the Design Files, the Licensor explicitly states:
+
+- **Any individual or commercial entity may freely use, copy, study and distribute the Unmodified Version, without any additional paid license or separate authorization, as long as the other terms of this License are respected.**
+
+1.2 As long as you are not covered by the prohibitions in Section 4, you may:
+
+- Integrate the Unmodified Version into your own products (including commercial products);
+- Manufacture, use and sell hardware products implementing the Unmodified Version;
+
+provided that:
+
+- (a) You keep all copyright notices of the Licensor and this License in full; and  
+- (b) When distributing the Unmodified Version, you do so only under the terms of this License, without imposing further restrictions.
+
+---
+
+## 2. 修改版本的开放义务 / Conditions for Modified Versions
+
+**中文**
+
+2.1 「未修改版本」指对设计文件的逐字复制，仅允许打包或格式上的调整，不包含任何实质性修改。  
+「修改版本」指在整体或部分基础上，对设计文件进行修改、扩展、适配、组合或派生而成的任何设计文件。
+
+2.2 如果你创建了设计文件的修改版本，并且 **分发** 该修改版本或基于其实现的硬件产品，你必须：
+
+- (a) 将 **所有修改后的设计文件** 的完整对应源文件免费向公众开放，并使用与本许可证相同的许可条款；  
+- (b) 清晰记录和说明你所做的修改内容；  
+- (c) 保留原始版权声明，并为你自己的贡献添加版权声明；  
+- (d) 确保修改版本及其分发行为，完全受本许可证全部条款约束，包括第 4 条中的禁止条款。
+
+2.3 你可以就基于修改版本的硬件产品的制造、组装、测试或分发收取费用，但必须同时满足上述全部义务。
+
+**English (reference only)**
+
+2.1 “Unmodified Version” means a verbatim copy of the Design Files, with no substantive changes other than packaging or formatting.  
+“Modified Version” means any design derived from the Design Files, in whole or in part, by changing, extending, adapting or combining them.
+
+2.2 If you create a Modified Version and **distribute** the Modified Version or any hardware implementing it, you MUST:
+
+- (a) Make the complete corresponding source of **all modified Design Files** publicly available, free of charge, under the same License as this document;  
+- (b) Clearly document the modifications you have made;  
+- (c) Retain the original copyright notices and add your own copyright notice for your contributions;  
+- (d) Ensure that the Modified Version and any distribution thereof remains fully subject to all terms of this License, including the prohibitions in Section 4.
+
+2.3 You MAY charge for manufacturing, assembly, testing, or distribution of hardware products based on a Modified Version, as long as you satisfy all obligations above.
+
+---
+
+## 3. 特定名词定义 / Specific Definitions
+
+**中文**
+
+3.1 **CherryUSB 原作者**：指最初创建并公开 CherryUSB USB 协议栈项目的个人（不论其当前在何处托管代码仓库，或使用何种账号名义）。
+
+3.2 **Cherry 相关官方组织及仓库**，包括但不限于：
+
+- GitHub 组织 `cherry-embedded` 及其名下的所有仓库（如 `CherryUSB`、`CherryDAP` 等）；  
+- GitHub 组织 `CherryUSB` 及其名下的所有仓库；  
+- 其它以「CherryUSB」「CherryDAP」作为官方名义或品牌、由上述组织直接控制的代码仓库与镜像仓库（无论托管于 GitHub、Gitee 或其它平台）。
+
+3.3 **CherryDAP 及相关硬件平台**：指以 CherryUSB / CherryDAP 为基础实现的调试器、适配器或硬件平台，包括但不限于：
+
+- 以 CherryDAP 参考设计为基础的 SWD/JTAG 调试器；  
+- 标榜或实际运行 CherryUSB / CherryDAP 协议栈、并对外宣传该事实的硬件产品；  
+- 以 CherryDAP 官方或其直接衍生工程的硬件设计为基础的板卡、模块和整机。
+
+3.4 **连接 / 使用**：在本许可证中，既包括对设计文件本身的使用、复制、参考、修改和再分发，也包括将基于本设计实现的硬件通过 SWD / JTAG / USB 或其它接口，与第三方设备进行电气连接并进行调试 / 通信 / 控制等行为。
+
+**English (reference only)**
+
+3.1 **Original Author of CherryUSB**: the individual who initially created and publicly released the CherryUSB USB stack project, regardless of current hosting platform or account name.
+
+3.2 **Cherry-related official organizations and repositories** include, but are not limited to:
+
+- The GitHub organization `cherry-embedded` and all repositories under it (such as `CherryUSB`, `CherryDAP`, etc.);  
+- The GitHub organization `CherryUSB` and all repositories under it;  
+- Any other code repositories and mirrors officially branded as “CherryUSB” or “CherryDAP” and directly controlled by the above organizations, regardless of hosting platform.
+
+3.3 **CherryDAP and related hardware platforms**: any debugger, adapter, or hardware platform based on CherryUSB / CherryDAP, including but not limited to:
+
+- SWD/JTAG debuggers derived from CherryDAP reference designs;  
+- Hardware products that run CherryUSB / CherryDAP stacks and publicly advertise that fact;  
+- Boards, modules and complete devices derived from the official CherryDAP hardware designs or their direct derivatives.
+
+3.4 **Connect / Use**: includes not only using, copying, referencing, modifying or redistributing the Design Files, but also electrically connecting hardware implementing this Design to third-party devices via SWD / JTAG / USB or other interfaces, for debugging, communication, or control.
+
+---
+
+## 4. 禁止对象与禁止用途 / Prohibited Entities and Uses
+
+> **注意：下列条款仅对明确罗列的对象与场景生效，不自动扩展到其它无关项目或维护者个人。**  
+> Note: The following clauses apply only to explicitly listed entities and scenarios, and do NOT automatically extend to unrelated projects or maintainers as individuals.
+
+### 4.1 禁止对象 / Prohibited Entities
+
+**中文**
+
+在本许可证下，以下主体 **不享有任何权利**，不得以任何方式使用本设计文件及其衍生设计：
+
+- CherryUSB 原作者本人；  
+- 第 3.2 条所述的 Cherry 相关官方组织及其名下仓库（如 `cherry-embedded/CherryUSB`、`cherry-embedded/CherryDAP` 等）及在这些仓库名义下进行的任何活动。
+
+上述禁止仅针对 **原作者本人及其官方组织 / 仓库**，不自动扩展到其他普通贡献者、维护者或无关组织。
+
+**English (reference only)**
+
+Under this License, the following entities are granted **no rights** and may not use the Design Files or any derivatives in any way:
+
+- The Original Author of CherryUSB;  
+- The Cherry-related official organizations and their repositories as defined in Section 3.2 (e.g. `cherry-embedded/CherryUSB`, `cherry-embedded/CherryDAP`, etc.), and any activities carried out under those repositories.
+
+This prohibition applies specifically to **the original author and the official organizations/repositories**, and does **not** automatically extend to unrelated contributors, maintainers, or organizations.
+
+---
+
+### 4.2 禁止 Cherry 相关项目及硬件的使用 / Ban on Cherry-related Projects and Hardware
+
+**中文**
+
+无论由何人实施，下列行为在本许可证下均属 **明确禁止**：
+
+1. 在 CherryUSB、CherryDAP 或其衍生项目的代码仓库中，直接或间接使用、参考或拷贝本设计文件或任何修改版本；  
+2. 将本设计文件或任何修改版本集成到 CherryUSB、CherryDAP 或其衍生项目中；  
+3. 将基于本设计实现的硬件，与任何 **CherryDAP 及相关硬件平台**（第 3.3 条）通过 SWD / JTAG / USB 或其它接口连接，用于调试、下载、通信或任何形式的协同工作；
+4. 将基于本设计实现的硬件，作为专门面向 CherryUSB / CherryDAP 或其衍生项目的配套硬件进行宣传、销售或分发。
+
+换句话说：
+
+- **不允许 Cherry 相关的所有硬件平台（包含 CherryDAP 及其衍生硬件）作为上位机或下位机连接到本硬件设计及其衍生设计；**  
+- 不允许在 CherryUSB / CherryDAP 系列官方项目及其官方组织名下仓库中，以任何方式使用、参考或拷贝本设计文件。
+
+**English (reference only)**
+
+Regardless of who performs the action, the following uses are **strictly prohibited** under this License:
+
+1. Using, referencing, or copying the Design Files or any Modified Version, directly or indirectly, inside CherryUSB, CherryDAP, or their derivative project repositories;  
+2. Integrating the Design Files or any Modified Version into CherryUSB, CherryDAP, or any of their derivatives;  
+3. Connecting hardware implementing this Design to any **CherryDAP and related hardware platforms** (Section 3.3) via SWD / JTAG / USB or other interfaces, for debugging, flashing, communication, or any form of cooperative operation;  
+4. Marketing, selling or distributing hardware implementing this Design specifically as companion hardware for CherryUSB / CherryDAP or their derivatives.
+
+In other words:
+
+- **No Cherry-related hardware platforms (including CherryDAP and its derivative hardware) may be connected to this hardware design or any derivative design as host or target;**  
+- The Design Files may not be used, referenced, or copied in any CherryUSB / CherryDAP official projects or repositories under their official organizations.
+
+---
+
+## 5. 商标 / Trademark
+
+**中文**
+
+本许可证不授予你使用许可方名称、标识或商标的任何权利。
+
+**English (reference only)**
+
+This License does not grant you any rights to use the name, logos, or trademarks of the Licensor.
+
+---
+
+## 6. 免责声明 / Disclaimer of Warranty
+
+**中文**
+
+设计文件按「现状」提供，许可方不对其作出任何明示或暗示的保证，包括但不限于对适销性、特定用途适用性及不侵权的保证。
+
+**English (reference only)**
+
+THE DESIGN FILES ARE PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+---
+
+## 7. 责任限制 / Limitation of Liability
+
+**中文**
+
+在任何情况下，许可方均不对因设计文件或其使用、分发而产生或与之相关的任何索赔、损害或其他责任承担赔偿责任，无论该责任基于合同、侵权或其他法律依据。
+
+**English (reference only)**
+
+IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE DESIGN FILES OR THE USE OR OTHER DEALINGS IN THE DESIGN FILES.
+
+---
+
+## 8. 语言条款 / Language
+
+**中文**
+
+本许可证提供中英文双语版本。如两种语言版本存在不一致或歧义，**以中文版本为准**。
+
+**English**
+
+This License is provided in both Chinese and English. In case of any inconsistency or ambiguity between the two language versions, **the Chinese version shall prevail**.
