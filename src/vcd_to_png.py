@@ -87,9 +87,7 @@ def build_ref_to_tv(v):
     return ref_to_tv
 
 def pick_by_suffix(ref_to_tv, suf):
-    for full in ref_to_tv.keys():
-        if full.endswith(suf): return full
-    return ""
+    return next((full for full in ref_to_tv.keys() if full.endswith(suf)), "")
 
 def tv_to_step(tv, t_end=None):
     """把 0/1/z/x 转为阶梯线；z=0.2*AMP, x=0.7*AMP。若给出 t_end，则把最后电平延长到 t_end。"""
@@ -143,7 +141,7 @@ def derive_host_tv(tv_bus, tv_mosi, tv_oe_n, fedges=None, rnw='x', ack_ok=None):
             if oe == '1':
                 v = 'z'
             else:
-                v = at(tv_mosi if tv_mosi else tv_bus, ts)
+                v = at(tv_mosi or tv_bus, ts)
             if v != lastv:
                 out.append((ts, v)); lastv = v
         return out
@@ -167,7 +165,7 @@ def derive_host_tv(tv_bus, tv_mosi, tv_oe_n, fedges=None, rnw='x', ack_ok=None):
     for i in range(48):
         ts = (fedges[i] + fedges[i+1]) // 2
         if host_owns_bit(i):
-            v = value_at(tv_mosi if tv_mosi else tv_bus, ts)
+            v = value_at(tv_mosi or tv_bus, ts)
         else:
             v = 'z'
         if v != lastv:

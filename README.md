@@ -110,7 +110,7 @@ ACK_WINDOW 中的 3bit 解码为：
 | 2..9    | 主机               | Request[0..7]         | `start → park`                                      |
 | 10      | 全线高阻           | Turnaround #1         | 主机释放，等待目标发 ACK                            |
 | 11..13  | 目标               | ACK[0..2]             | 捕获到前端移位寄存器                                |
-| **14**  | 主机或高阻（可选） | **Turnaround #2**     | **主机可已开始驱动（占位）或保持 Z**                |
+| **14**  | 主机或高阻（可选） | **Turnaround #2**     | **主机可以开始驱动（占位）或保持 Z**                |
 | 15..46  | 主机（MOSI）       | DATA[0..31]           | bit15 = DATA0，bit46 = DATA31                       |
 | 47      | 主机（MOSI）       | PARITY                | `PARITY = XOR(DATA[31:0])`                          |
 | ≥48     | 主机 / 高阻        | Idle / 下一帧 padding | ACK≠001 时保持高阻，只送 idle；ACK=001 可接续下一帧 |
