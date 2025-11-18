@@ -1,2 +1,5 @@
 impl/**
 swd.gprj.user
+src/build/**
+*.vcd
+*.log

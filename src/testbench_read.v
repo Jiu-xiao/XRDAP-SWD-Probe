@@ -1,223 +1,208 @@
 `timescale 1ns/1ps
 
+// ============================================================================
+// Testbench: READ path
+// - Verifies RAW passthrough when rst_n=0 (MOSI→SWDIO, SWCLK pass-through)
+// - Verifies READ transaction timing and ownership (REQ / TURN / ACK / DATA / PARITY)
+// - Checks that on ACK=001: target drives DATA[31:0] (bit14..45) and PARITY (bit46)
+// ============================================================================
+
 module testbench_read;
-
-    // ===== SPI / MCU 侧 =====
-    reg  sck  = 0;
-    reg  mosi = 0;
+    // ==== DUT I/Os ====
+    reg  sck   = 0;
+    reg  mosi  = 0;
     wire miso;
-
     reg  rst_n = 0;
-    reg  rnw   = 1;   // READ 事务
+    reg  rnw   = 1;   // 1 = READ
 
-    // ===== SWD 侧 =====
     wire swclk;
-    wire swdio_bus;
+    wire swdio;
 
-    // 目标端三态驱动
+    // TB drives SWDIO only in ACK/DATA windows; otherwise releases the line
     reg tb_swdio_en  = 0;
-    reg tb_swdio_val = 1;
-    assign swdio_bus = tb_swdio_en ? tb_swdio_val : 1'bz;
+    reg tb_swdio_val = 0;
+    assign swdio = tb_swdio_en ? tb_swdio_val : 1'bz;
 
-    // DUT
-    swd_frontend_top dut (
-        .sck   (sck),
-        .mosi  (mosi),
-        .miso  (miso),
-        .rst_n (rst_n),
-        .rnw   (rnw),
-        .swclk (swclk),
-        .swdio (swdio_bus)
+    // Bit index within a 48-bit frame (logged at posedge sample)
+    reg [5:0] tb_bit_idx = 0;
+
+    // ==== Instantiate DUT ====
+    swd_frontend_top dut(
+        .sck(sck), .mosi(mosi), .miso(miso),
+        .rst_n(rst_n), .rnw(rnw),
+        .swclk(swclk), .swdio(swdio)
     );
 
-    // 100MHz SCK
-    always #5 sck = ~sck;
+    // Helpers: printing / expects / internal probes of DUT
+    `include "tb_timing_helpers.vh"
 
-    // 位索引：0..47
-    reg [5:0] tb_bit_idx;
+    // 2 ns period clock
+    always #1 sck = ~sck;
 
-    always @(posedge sck or negedge rst_n) begin
-        if (!rst_n)
-            tb_bit_idx <= 6'd0;
-        else
-            tb_bit_idx <= tb_bit_idx + 6'd1;
-    end
-
-    localparam [7:0]  REQ_BYTE  = 8'hA5;
-    localparam [31:0] RD_DATA32 = 32'h1234_5678;
-    localparam        RD_PARITY = ~(^RD_DATA32); // odd parity
-
-    reg [2:0] ack_bits_reg = 3'b001; // 默认 ACK = OK
-    reg       ack_logged   = 1'b0;
-    reg       swdio_obs;
-    reg       mosi_obs;
-    reg       miso_obs;
-
-    // MOSI：padding + Request，其他随便
-    always @(negedge sck or negedge rst_n) begin
-        if (!rst_n) begin
-            mosi <= 1'b0;
-        end else begin
-            case (tb_bit_idx)
-                6'd0,
-                6'd1,
-                6'd2: mosi <= 1'b0;          // 前三位 padding 0
-                6'd3: mosi <= REQ_BYTE[0];   // REQ[0]
-                6'd4: mosi <= REQ_BYTE[1];
-                6'd5: mosi <= REQ_BYTE[2];
-                6'd6: mosi <= REQ_BYTE[3];
-                6'd7: mosi <= REQ_BYTE[4];
-                6'd8: mosi <= REQ_BYTE[5];
-                6'd9: mosi <= REQ_BYTE[6];
-                6'd10: mosi <= REQ_BYTE[7];  // REQ[7]
-                default: mosi <= 1'b1;       // 其他阶段 MOSI 可随意
-            endcase
-        end
-    end
-
-    // SWDIO（目标端）驱动：ACK + 读数据 + parity
-    always @(negedge sck or negedge rst_n) begin
-        if (!rst_n) begin
-            tb_swdio_en  <= 1'b0;
-            tb_swdio_val <= 1'b1;
-        end else begin
-            // ACK：12..14
-            if (tb_bit_idx == 6'd12) begin
-                tb_swdio_en  <= 1'b1;
-                tb_swdio_val <= ack_bits_reg[0]; // ACK0
-            end else if (tb_bit_idx == 6'd13) begin
-                tb_swdio_en  <= 1'b1;
-                tb_swdio_val <= ack_bits_reg[1]; // ACK1
-            end else if (tb_bit_idx == 6'd14) begin
-                tb_swdio_en  <= 1'b1;
-                tb_swdio_val <= ack_bits_reg[2]; // ACK2
-            end
-            // Data：15..46（只有 ACK=001 时输出）
-            else if ((ack_bits_reg == 3'b001) &&
-                     (tb_bit_idx >= 6'd15) && (tb_bit_idx < 6'd47)) begin
-                tb_swdio_en  <= 1'b1;
-                tb_swdio_val <= RD_DATA32[tb_bit_idx - 6'd15];
-            end
-            // Parity：47
-            else if ((ack_bits_reg == 3'b001) && (tb_bit_idx == 6'd47)) begin
-                tb_swdio_en  <= 1'b1;
-                tb_swdio_val <= RD_PARITY;
-            end
-            // 其他：释放总线
-            else begin
-                tb_swdio_en  <= 1'b0;
-                tb_swdio_val <= 1'b1;
-            end
-        end
-    end
-
-    // 波形
-    initial begin
-        $dumpfile("swd_read_48bit.vcd");
-        $dumpvars(0, testbench_read);
-    end
-
-    // 捕获读回数据（14..45）
-    reg [31:0] miso_capture;
-
-    always @(posedge sck or negedge rst_n) begin
-        if (!rst_n) begin
-            miso_capture <= 32'd0;
-        end else if (dut.after_ack && dut.ack_ok &&
-                     tb_bit_idx >= 6'd15 && tb_bit_idx < 6'd47) begin
-            miso_capture[tb_bit_idx - 6'd15] <= miso;
-        end
-    end
-
-    always @(negedge sck or negedge rst_n) begin
-        if (!rst_n) begin
-            swdio_obs <= 1'bz;
-            mosi_obs  <= 1'b0;
-            miso_obs  <= 1'b0;
-        end else begin
-            swdio_obs <= swdio_bus;
-            mosi_obs  <= mosi;
-            miso_obs  <= miso;
-        end
-    end
-
-    task automatic log_state(input string tag);
-    begin
-        $display("[LOG %s] @%0t bit=%0d data_phase=%0b ack_ok=%0b swdio=%b mosi=%b miso=%b",
-                 tag, $time, tb_bit_idx, dut.data_phase, dut.ack_ok, swdio_obs, mosi_obs, miso_obs);
-    end
+    // ==== Local helpers ====
+    task idle_cycles(input integer n);
+      integer i; begin for (i=0;i<n;i=i+1) @(posedge sck); end
     endtask
 
-    always @(posedge sck or negedge rst_n) begin
-        string evt;
-        if (!rst_n) begin
-            ack_logged <= 1'b0;
-        end else begin
-            case (tb_bit_idx)
-                6'd0:  log_state("FRAME_PAD");
-                6'd3:  log_state("REQ_START");
-                6'd11: log_state("TURNAROUND");
-                6'd12: log_state("ACK_WINDOW");
-                6'd15: log_state("DATA_START");
-                6'd47: log_state("PARITY_BIT");
-                default: ;
-            endcase
+    task pulse_reset_1clk;
+      begin
+        rst_n = 0; @(posedge sck);
+        rst_n = 1; @(posedge sck);
+      end
+    endtask
 
-            if (!ack_logged && dut.after_ack) begin
-                ack_logged <= 1'b1;
-                evt = $sformatf("ACK_DONE TB=%03b DUT=%03b",
-                                ack_bits_reg,
-                                {dut.ack_shreg[0], dut.ack_shreg[1], dut.ack_shreg[2]});
-                log_state(evt);
-            end
+    // ==== RAW passthrough: while rst_n=0, MOSI must appear on SWDIO (posedge-aligned) ====
+    task run_raw_passthrough_test(input [15:0] pattern);
+      integer i;
+      begin
+        $display("== RAW passthrough test start @%0t ==", $time);
+        tb_swdio_en   = 0;   // target does not drive
+        rst_n         = 0;   // RAW
+        rnw           = 1;   // don't care
+
+        for (i = 0; i < 16; i = i + 1) begin
+          @(negedge sck) begin
+            mosi <= pattern[i];
+          end
+          @(posedge sck) begin
+            // SWCLK must pass through
+            if (swclk !== sck) $fatal(1, "[RAW] SWCLK pass-through broken at i=%0d", i);
+            // MOSI must pass to SWDIO (DUT drives the line; should not be Z)
+            if (swdio !== mosi) $fatal(1, "[RAW] MOSI->SWDIO mismatch at i=%0d: mosi=%b swdio=%b", i, mosi, swdio);
+            // MISO readback should match
+            if (miso !== mosi)  $fatal(1, "[RAW] MISO mismatch at i=%0d: mosi=%b miso=%b", i, mosi, miso);
+          end
         end
-    end
 
-    task automatic run_frame(
-        input [2:0] ack_bits,
-        input string label
+        // Exit RAW
+        @(negedge sck) mosi <= 1'b0;
+        @(posedge sck) rst_n <= 1'b1;
+        $display("== RAW passthrough test end   @%0t ==", $time);
+      end
+    endtask
+
+    // ==== Send one 48-bit READ frame ====
+    task send_read_frame(
+        input [7:0]  req_lsb_first,  // SWD REQ, LSB-first
+        input [31:0] rd_data,        // expected DATA for ACK=001
+        input [2:0]  ack_bits        // {ACK2,ACK1,ACK0}, LSB-first on the wire
     );
-        reg [31:0] captured;
-    begin
-        // 帧前复位
-        rst_n       = 1'b0;
-        ack_bits_reg = ack_bits;
-        repeat (4) @(posedge sck);  // 保证清干净
+      integer i;
+      reg parity;
+      begin
+        parity = ^rd_data;  // keep consistent with README/TB (odd parity via XOR)
+        tb_bit_idx  = 0;
+        tb_swdio_en = 0;
+        tb_swdio_val= 0;
+        timing_reset();
 
-        // 开始一帧
-        $display("== Frame %s start @%0t | ack=%b ==", label, $time, ack_bits);
-        rst_n = 1'b1;
+        for (i=0;i<48;i=i+1) begin
+          // --- Prepare on negedge: TB drives only in ACK window and READ data phase ---
+          @(negedge sck) begin
+            tb_swdio_en  <= 0;
+            tb_swdio_val <= 0;
 
-        // 48bit SPI 传输
-        repeat (48) @(posedge sck);
+            // ACK window: bit 11..13 (ACK0..2, LSB-first)
+            if (tb_bit_idx==11) begin
+              tb_swdio_en  <= 1; tb_swdio_val <= ack_bits[0];
+            end else if (tb_bit_idx==12) begin
+              tb_swdio_en  <= 1; tb_swdio_val <= ack_bits[1];
+            end else if (tb_bit_idx==13) begin
+              tb_swdio_en  <= 1; tb_swdio_val <= ack_bits[2];
+            end
+            // READ data 14..45, parity 46 (only if ACK=001)
+            else if (ack_bits==3'b001 && tb_bit_idx>=14 && tb_bit_idx<=46) begin
+              tb_swdio_en  <= 1;
+              if (tb_bit_idx<46) tb_swdio_val <= rd_data[tb_bit_idx-14];
+              else               tb_swdio_val <= parity;
+            end
 
-        captured = miso_capture;
-
-        // 帧结束，拉低复位
-        rst_n = 1'b0;
-        repeat (4) @(posedge sck);
-
-        if (ack_bits == 3'b001) begin
-            if (captured !== RD_DATA32) begin
-                $error("READ data mismatch expected 0x%08h got 0x%08h",
-                       RD_DATA32, captured);
-                $fatal;
+            // Host preloads next MOSI so it's stable before posedge
+            if (!rst_n) begin
+              mosi <= 1'b0;
+            end else if (tb_bit_idx<=1) begin
+              mosi <= 1'b0;                            // 0..1 padding
+            end else if (tb_bit_idx>=2 && tb_bit_idx<=9) begin
+              mosi <= req_lsb_first[tb_bit_idx-2];     // 2..9 REQ (LSB-first)
             end else begin
-                $display("READ data OK: 0x%08h", captured);
+              mosi <= 1'b0;                            // otherwise keep 0
             end
-        end else begin
-            $display("READ frame with ACK=%b, captured=0x%08h", ack_bits, captured);
+          end
+
+          // --- Sample & checks on posedge ---
+          @(posedge sck) begin
+            tb_bit_idx <= (!rst_n) ? 0 : tb_bit_idx + 1;
+
+            // 0..1 padding
+            if (tb_bit_idx<=1) begin
+              expect_host_bit($sformatf("PAD[%0d]", tb_bit_idx), 1'b0);
+            end
+            // 2..9 REQ (LSB-first)
+            else if (tb_bit_idx>=2 && tb_bit_idx<=9) begin
+              expect_host_bit($sformatf("REQ[%0d]", tb_bit_idx-2), req_lsb_first[tb_bit_idx-2]);
+            end
+            // 10 turnaround#1
+            else if (tb_bit_idx==10) begin
+              expect_turnaround_z("TURN1");
+            end
+            // 11..13 ACK window
+            else if (tb_bit_idx>=11 && tb_bit_idx<=13) begin
+              expect_target_bit($sformatf("ACK[%0d]", tb_bit_idx-11), ack_bits[tb_bit_idx-11]);
+            end
+            // 14: READ data start (ACK=001) / otherwise keep idle
+            else if (tb_bit_idx==14) begin
+              // Verify ACK captured to ack_shreg and ack_ok computed
+              check_ack_capture(ack_bits);
+              check_ack_ok_flag(ack_bits);
+              if (ack_bits==3'b001) begin
+                expect_target_bit("READ_DATA[0]", rd_data[0]);
+              end else begin
+                expect_line_idle("TURN2_IDLE");
+              end
+            end
+            // 15..45 data bits when ACK=001
+            else if (ack_bits==3'b001 && tb_bit_idx>=15 && tb_bit_idx<=45) begin
+              expect_target_bit($sformatf("READ_DATA[%0d]", tb_bit_idx-14), rd_data[tb_bit_idx-14]);
+            end
+            // 46 parity (READ+OK)
+            else if (ack_bits==3'b001 && tb_bit_idx==46) begin
+              expect_target_bit("READ_PARITY", parity);
+            end
+            // Tail idle (bit 47 and all WAIT/FAULT bits)
+            else begin
+              expect_line_idle("READ_IDLE");
+            end
+          end
         end
 
-        $display("== Frame %s end   @%0t ==", label, $time);
-    end
+        timing_report($sformatf("READ REQ=0x%02x ACK=%03b", req_lsb_first, ack_bits));
+      end
     endtask
 
+    // ==== Main ====
     initial begin
-        run_frame(3'b001, "READ_OK");
-        run_frame(3'b010, "READ_WAIT");
-        $display("== TB finish ==");
-        $finish;
-    end
+      $dumpfile("swd_read.vcd");
+      $dumpvars(0, testbench_read);
 
+      // Settle clock
+      idle_cycles(4);
+
+      // RAW passthrough (rst_n=0)
+      run_raw_passthrough_test(16'hA5C3);
+
+      // READ OK
+      pulse_reset_1clk();  // reset one cycle before frame, ensure bit_cnt starts at 0
+      $display("== Frame READ_OK start @%0t | REQ=0xa5 ACK=001 DATA=0x12345678 ==", $time);
+      send_read_frame(8'hA5, 32'h1234_5678, 3'b001);
+      $display("== Frame READ_OK end   @%0t ==", $time);
+
+      // READ WAIT
+      pulse_reset_1clk();
+      $display("== Frame READ_WAIT start @%0t | REQ=0xa5 ACK=010 ==", $time);
+      send_read_frame(8'hA5, 32'hDEAD_BEEF, 3'b010);
+      $display("== Frame READ_WAIT end   @%0t ==", $time);
+
+      $display("== TB finish ==");
+      $finish;
+    end
 endmodule
