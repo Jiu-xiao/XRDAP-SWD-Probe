@@ -1,10 +1,22 @@
+// Host SPI / Control — 连续 39..43（BANK1 = 3.3V）
+IO_LOC  "sck"    39;
+IO_PORT "sck"    IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 
-//IO_LOC "led_o" 10;
-//IO_PORT "led_o" IO_TYPE=LVCMOS33 DRIVE=8 BANK_VCCIO=3.3;
-//IO_LOC "key[1]" 15;
-//IO_PORT "key[1]" PULL_MODE=UP BANK_VCCIO=1.8;
-//IO_LOC "key[0]" 14;
-//IO_PORT "key[0]" PULL_MODE=UP BANK_VCCIO=1.8;
-//IO_PORT "rst_n" PULL_MODE=UP;
-//IO_LOC "clk" 45;
-//IO_PORT "clk" IO_TYPE=LVCMOS33;
+IO_LOC  "mosi"   40;
+IO_PORT "mosi"   IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC  "miso"   41;
+IO_PORT "miso"   IO_TYPE=LVCMOS33 DRIVE=8;
+
+IO_LOC  "rst_n"  42;
+IO_PORT "rst_n"  IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+IO_LOC  "rnw"    43;
+IO_PORT "rnw"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+
+// Target SWD — 相邻 44/46
+IO_LOC  "swclk"  44;
+IO_PORT "swclk"  IO_TYPE=LVCMOS33 DRIVE=8;
+
+IO_LOC  "swdio"  46; 
+IO_PORT "swdio"  IO_TYPE=LVCMOS33 PULL_MODE=UP;
