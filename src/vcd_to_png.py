@@ -1,514 +1,585 @@
-# vcd_to_png.py — 一帧一图（READ/WRITE/auto），或自动降级 RAW；主机/从机/总线视角；按位采样 + 区块着色 + 每帧摘要
+# vcd_to_png.py — RAW waveform + SWD zone annotation (cycle-pair based)
+# Update: y-axis lanes become semantic: clk/rst/rnw + host/target drive/sample
+
 from pathlib import Path
 import argparse
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from vcdvcd import VCDVCD
 
-# ===================== 可调参数（与 TB/README 对齐） =====================
-PARITY_MODE = "TB"     # "TB": parity = ^data（与你 TB/README 一致）；"SWD": 规范奇校验（READ 为奇校验=~^data）
-TRACK_AMP   = 0.85     # 单轨振幅（0/1 映射到 0..TRACK_AMP；Z=0.2*AMP；X=0.7*AMP）
-TRACK_STEP  = 1.6      # 相邻轨道步距（避免重叠）
-LW          = 1.2      # 波形线宽
+# ===== Visual params =====
+TRACK_AMP   = 0.85
+TRACK_STEP  = 1.6
+LW          = 1.2
 FONTSZ_MAIN = 11
 FONTSZ_LAB  = 9
 FONTSZ_TINY = 8
 
-DEFAULT_VIEW = "all"   # 'host' / 'target' / 'bus' / 'all'
-DEFAULT_MODE = "auto"  # 'read' / 'write' / 'auto'（auto 识别不到帧则降级为 RAW 长图）
+Y_0 = 0.0
+Y_1 = TRACK_AMP
+Y_Z = 0.20 * TRACK_AMP
+Y_X = 0.70 * TRACK_AMP
 
-# 关键信号后缀（后缀匹配；推荐用 --map 精确指定）
-CORE_SUFFIX = [".sck", ".rst_n", ".rnw", ".mosi", ".miso", ".swdio"]
-# 主机输出使能（低有效，0=驱动，1=释放）
-OE_CANDIDATES = [".swdio_oe_n_fix", ".host_oe_n", ".oe_n"]
+SAMPLE_EPS = 1  # avoid sampling exactly at transition timestamp
 
-# 区块颜色
-ZONE_CLR = dict(PAD="#cfe9ff", REQ="#cfe9ff", TA1="#ffd8a8", ACK="#ffb3b3",
-                TA2="#ffd8a8", DATA="#cfe9ff", PAR="#d6ffd6")
+ZONE_CLR = dict(
+    PAD="#cfe9ff",
+    REQ="#cfe9ff",
+    TA1="#ffd8a8",
+    ACK="#ffb3b3",
+    TA2="#ffd8a8",
+    DATA="#cfe9ff",
+    PAR="#d6ffd6",
+    TAIL="#e6e6e6",
+)
 
-BIT_TICKS = (0, 8, 16, 24, 32, 40, 46)
+DEFAULT_SUFFIXES = [".sck", ".rst_n", ".rnw", ".mosi", ".miso", ".swdio", ".tb_swdio_en", ".tb_swdio_val"]
 
-# ===================== 工具函数 =====================
-def rise_edges(tv):
-    """把 x/z→1 也当上升沿，避免丢第一拍"""
-    tv = sorted(tv, key=lambda x: x[0])
-    edges, last = [], None
-    for t, v in tv:
-        if v == '1' and last != '1':
-            edges.append(t)
-        last = v
-    return edges
-
-def value_at(tv, ts):
-    last = '0'
-    for t, v in sorted(tv, key=lambda x: x[0]):
-        if t > ts: break
-        last = v
-    return last
-
-def decode_bits_at(edges, tv, b_lo, b_hi):
-    """按位采样：在相邻两个 SCK 上升沿的中点采样"""
-    bits = []
-    for i in range(b_lo, b_hi):
-        if i+1 >= len(edges): break
-        tm = (edges[i] + edges[i+1]) // 2
-        bits.append(value_at(tv, tm))
-    return bits
-
-def bits_lsb_first_to_int(bit_list):
-    if not bit_list or any(b not in ('0','1') for b in bit_list): return 0, False
-    v = 0
-    for i, b in enumerate(bit_list):
-        if b == '1': v |= (1 << i)
-    return v, True
-
-def parity_expected_32(v):
-    xor1 = bin(v & 0xFFFFFFFF).count("1") & 1
-    return xor1 if PARITY_MODE == "TB" else (1 - xor1)
-
+# ===== VCD helpers =====
 def build_ref_to_tv(v):
-    """统一 fullname -> tv 的索引，兼容不同 VCD 结构"""
     ref_to_tv = {}
     data = getattr(v, "data", {})
     for node in data.values():
         tv = getattr(node, "tv", [])
-        if not tv: continue
+        if not tv:
+            continue
         refs = getattr(node, "references", [])
         if refs:
-            for r in refs: ref_to_tv[str(r)] = tv
+            for r in refs:
+                ref_to_tv[str(r)] = tv
             continue
         nets = getattr(node, "nets", [])
         for net in nets:
             hier = str(getattr(net, "hier", "")).strip(".")
             name = str(getattr(net, "name", "")).strip(".")
             full = (hier + "." + name).strip(".")
-            if full: ref_to_tv[full] = tv
+            if full:
+                ref_to_tv[full] = tv
     return ref_to_tv
 
-def pick_by_suffix(ref_to_tv, suf):
-    return next((full for full in ref_to_tv.keys() if full.endswith(suf)), "")
+def pick_by_suffix(ref_to_tv, suffix):
+    return next((full for full in ref_to_tv.keys() if full.endswith(suffix)), "")
 
-def tv_to_step(tv, t_end=None):
-    """把 0/1/z/x 转为阶梯线；z=0.2*AMP, x=0.7*AMP。若给出 t_end，则把最后电平延长到 t_end。"""
-    if not tv: return [], []
+def normalize_1bit_val(v):
+    if v is None:
+        return 'x'
+    s = str(v)
+    if s in ('0', '1'):
+        return s
+    if s in ('x', 'X'):
+        return 'x'
+    if s in ('z', 'Z'):
+        return 'z'
+    if s.startswith('b') and len(s) >= 2:
+        bits = s[1:]
+        if len(bits) == 1 and bits in ('0', '1', 'x', 'z', 'X', 'Z'):
+            return normalize_1bit_val(bits)
+        return 'x'
+    return 'x'
+
+def value_at(tv, ts):
+    last = '0'
+    for t, v in sorted(tv, key=lambda x: x[0]):
+        if t > ts:
+            break
+        last = normalize_1bit_val(v)
+    return last
+
+def tv_to_step_1bit(tv, t_end=None):
+    if not tv:
+        return [], []
     tv = sorted(tv, key=lambda x: x[0])
-    t, y = [tv[0][0]], [tv[0][1]]; last = tv[0][1]
-    for ti, vi in tv[1:]:
-        t += [ti, ti]; y += [last, vi]; last = vi
-    # 原来是 t.append(t[-1] + 1)
-    end = (t_end if (t_end is not None) else (t[-1] + 1))
-    if end > t[-1]:
-        t.append(end); y.append(last)
-    y = [0.0 if v=='0' else TRACK_AMP if v=='1'
-         else 0.20*TRACK_AMP if v in ('z','Z')
-         else 0.70*TRACK_AMP for v in y]
+    tvn = [(t, normalize_1bit_val(v)) for t, v in tv]
+
+    t = [tvn[0][0]]
+    yv = [tvn[0][1]]
+    last = tvn[0][1]
+    for ti, vi in tvn[1:]:
+        t += [ti, ti]
+        yv += [last, vi]
+        last = vi
+
+    if t_end is None:
+        t_end = t[-1] + 1
+    if t_end > t[-1]:
+        t.append(t_end)
+        yv.append(last)
+
+    def map_y(v):
+        if v == '0': return Y_0
+        if v == '1': return Y_1
+        if v == 'z': return Y_Z
+        return Y_X
+
+    y = [map_y(v) for v in yv]
     return t, y
 
-def merge_time_axis(tv_a, tv_b):
-    return sorted(set([t for t,_ in tv_a] + [t for t,_ in tv_b]))
-
-def count_edges_in_range(tv, t0, t1):
-    last = None; cnt = 0
-    for t, v in sorted(tv, key=lambda x: x[0]):
-        if t < t0: 
-            last = v; 
+def collect_time_range(tvs):
+    times = []
+    for tv in tvs:
+        if not tv:
             continue
-        if t > t1: 
-            break
-        if last is not None and v != last:
-            cnt += 1
-        last = v
-    return cnt
+        times.append(min(t for t, _ in tv))
+        times.append(max(t for t, _ in tv))
+    if not times:
+        return 0, 100
+    return min(times), max(times)
 
-def derive_host_tv(tv_bus, tv_mosi, tv_oe_n, fedges=None, rnw='x', ack_ok=None):
+def rise_edges(tv):
+    tv = sorted(tv, key=lambda x: x[0])
+    edges, last = [], None
+    for t, v in tv:
+        vv = normalize_1bit_val(v)
+        if vv == '1' and last != '1':
+            edges.append(t)
+        last = vv
+    return edges
+
+# ===== Build clock cycles: list of (posedge_time, negedge_time) =====
+def build_sck_cycles(tv_sck):
+    tv = sorted(tv_sck, key=lambda x: x[0])
+    last = None
+    pending_rise = None
+    cycles = []
+    for t, v in tv:
+        vv = normalize_1bit_val(v)
+        if last is None:
+            last = vv
+            continue
+        if vv == last:
+            continue
+        if vv == '1' and last != '1':
+            pending_rise = t
+        elif vv == '0' and last == '1' and pending_rise is not None:
+            cycles.append((pending_rise, t))
+            pending_rise = None
+        last = vv
+    return cycles
+
+# ===== Sampling instants on cycles =====
+def pos_ts(cycles, start_idx, bit_i):
+    return cycles[start_idx + bit_i][0] + SAMPLE_EPS
+
+def neg_ts(cycles, start_idx, bit_i):
+    return cycles[start_idx + bit_i][1] + SAMPLE_EPS
+
+def t_edge(cycles, start_idx, bit_idx):
+    if bit_idx <= 47:
+        return cycles[start_idx + bit_idx][0]
+    return cycles[start_idx + 47][1]
+
+# ===== Semantic lane derivations =====
+def merge_change_times(*tvs):
+    ts = set()
+    for tv in tvs:
+        if not tv:
+            continue
+        for t, _ in tv:
+            ts.add(int(t))
+    return sorted(ts)
+
+def derive_target_drive_tv(tv_tb_en, tv_tb_val):
     """
-    主机视角：OE=1 -> Z；OE=0 -> 主机输出（优先 MOSI；没有 MOSI 则用 bus）。
-    若无 tv_oe_n，则按窗口推断：0..9 host；10..13 释放；READ: >=14 释放；
-                                 WRITE: ACK=001 → >=15 host；否则释放。
+    target_drive = tb_en ? tb_val : Z
     """
-    if tv_oe_n:
-        pts = merge_time_axis(tv_bus, tv_oe_n)
-        out, lastv = [], None
-        def at(tv, ts):
-            last = '0'
-            for t, v in tv:
-                if t > ts: break
-                last = v
-            return last
-        for ts in pts:
-            oe = at(tv_oe_n, ts)
-            if oe == '1':
+    if not tv_tb_en or not tv_tb_val:
+        return []
+    pts = merge_change_times(tv_tb_en, tv_tb_val)
+    out = []
+    last = None
+    for t in pts:
+        en = value_at(tv_tb_en, t)
+        if en == '1':
+            v = value_at(tv_tb_val, t)
+            v = v if v in ('0','1') else 'x'
+        else:
+            v = 'z'
+        if v != last:
+            out.append((t, v))
+            last = v
+    return out
+
+def derive_host_drive_on_wire_tv(tv_mosi, tv_swdio, tv_tb_en=None):
+    """
+    host_drive = (target not driving) AND (bus not Z) ? MOSI : Z
+    - If TB drives (tb_en=1): host_drive=Z
+    - Else if bus is Z: host_drive=Z (turnaround / released)
+    - Else host_drive = MOSI (what host is putting onto the line through DUT)
+    """
+    if not tv_mosi or not tv_swdio:
+        return []
+    pts = merge_change_times(tv_mosi, tv_swdio, tv_tb_en if tv_tb_en else [])
+    out = []
+    last = None
+    for t in pts:
+        if tv_tb_en and value_at(tv_tb_en, t) == '1':
+            v = 'z'
+        else:
+            bus = value_at(tv_swdio, t)
+            if bus == 'z':
                 v = 'z'
             else:
-                v = at(tv_mosi or tv_bus, ts)
-            if v != lastv:
-                out.append((ts, v)); lastv = v
-        return out
-
-    # 无 OE：在帧范围内基于窗口推断
-    if not fedges:
-        return tv_bus
-    def host_owns_bit(i):
-        if 0 <= i <= 9: return True
-        if 10 <= i <= 13: return False
-        if rnw == '1':   # READ
-            return False
-        if rnw == '0':   # WRITE
-            if ack_ok is True:
-                return (i >= 15)
-            else:
-                return False
-        return False
-
-    out, lastv = [], None
-    for i in range(48):
-        ts = (fedges[i] + fedges[i+1]) // 2
-        if host_owns_bit(i):
-            v = value_at(tv_mosi or tv_bus, ts)
-        else:
-            v = 'z'
-        if v != lastv:
-            out.append((fedges[i], v)); lastv = v
-    out.append((fedges[48], lastv if lastv is not None else 'z'))
-    return out
-
-def derive_target_tv(tv_bus, host_tv, fedges=None):
-    """从机视角：主机驱动时 → Z；否则显示 bus"""
-    if not host_tv:
-        return tv_bus
-    pts = merge_time_axis(tv_bus, host_tv)
-    out, lastv = [], None
-    def at(tv, ts):
-        last = '0'
-        for t, v in tv:
-            if t > ts: break
+                mv = value_at(tv_mosi, t)
+                v = mv if mv in ('0','1') else 'x'
+        if v != last:
+            out.append((t, v))
             last = v
-        return last
-    for ts in pts:
-        hv = at(host_tv, ts)
-        if hv in ('z','Z'):
-            v = at(tv_bus, ts)
-        else:
-            v = 'z'
-        if v != lastv:
-            out.append((ts, v)); lastv = v
     return out
 
-def label_zone(ax, fedges, b0, b1, text, color):
-    ax.axvspan(fedges[b0], fedges[b1], color=color, alpha=0.15, zorder=-3)
-    xmid = (fedges[b0] + fedges[b1]) / 2.0
-    ax.text(xmid, 0.97, text, transform=ax.get_xaxis_transform(),
-            ha="center", va="top", fontsize=FONTSZ_TINY, color="#1f4fbf", zorder=10)
-
-def ack_bits_str(fedges, tv_swdio):
-    bits = decode_bits_at(fedges, tv_swdio, 11, 14)
-    a0,a1,a2 = (bits + ['x','x','x'])[:3]
-    return f"{a2}{a1}{a0}"
-
-def mode_infer_rnw(fedges, tvmap, ack_ok):
+def derive_sample_hold_tv_from_cycles(cycles, tv_sig, edge="pos"):
     """
-    在没有 .rnw 信号时，粗略基于 MOSI 活动推断：
-    - ACK=001 后若 15..47 间 MOSI 活动很明显 → WRITE
-    - 否则倾向 READ
+    Build a sample-hold waveform:
+      - edge="pos": sample tv_sig at each posedge+eps, update at posedge time
+      - edge="neg": sample tv_sig at each negedge+eps, update at negedge time
     """
-    if not ack_ok: 
-        return '1'  # WAIT/FAULT 更像 READ 的“目标占线或空闲”
-    t0 = fedges[15]; t1 = fedges[47]
-    mosi_edges = count_edges_in_range(tvmap[".mosi"], t0, t1) if tvmap[".mosi"] else 0
-    return '0' if mosi_edges > 4 else '1'
+    if not cycles or not tv_sig:
+        return []
+    out = []
+    last = None
+    for (tp, tn) in cycles:
+        if edge == "pos":
+            t_upd = tp
+            t_smp = tp + SAMPLE_EPS
+        else:
+            t_upd = tn
+            t_smp = tn + SAMPLE_EPS
+        v = value_at(tv_sig, t_smp)
+        if v != last:
+            out.append((t_upd, v))
+            last = v
+    return out
 
-# ===================== 绘制单帧 =====================
-def plot_one_frame(figdir: Path, vcd_name: str, ref_to_tv, names, tv, fedges, period, idx,
-                   view='host', oe_name=None, mode='auto', debug_times=True):
-    xmin, xmax = fedges[0], fedges[48]
+# ===== Decode helpers (annotation only) =====
+def bits_lsb_first_to_int(bit_list):
+    if not bit_list or any(b not in ('0','1') for b in bit_list):
+        return 0, False
+    v = 0
+    for i, b in enumerate(bit_list):
+        if b == '1':
+            v |= (1 << i)
+    return v, True
 
-    # 先试 ACK
-    ack_str = ack_bits_str(fedges, tv[".swdio"])
-    ack_ok  = (ack_str == "001")
+def parity_even_32(v):
+    return bin(v & 0xFFFFFFFF).count("1") & 1
 
-    # 决定 rnw：mode > .rnw > heuristic
-    rnw = 'x'
-    if mode == 'read':   rnw = '1'
-    elif mode == 'write': rnw = '0'
-    elif names[".rnw"] and ref_to_tv.get(names[".rnw"], []):
-        rnw = value_at(tv[".rnw"], fedges[0] + max(1, period//10))
-    else:
-        rnw = mode_infer_rnw(fedges, tv, ack_ok)
+def target_bit_at(cycles, start_idx, bit_i, tv_swdio, tv_tb_en=None, tv_tb_val=None):
+    ts = neg_ts(cycles, start_idx, bit_i)
+    vb = value_at(tv_swdio, ts)
+    if vb in ('0','1'):
+        return vb
+    if tv_tb_en and tv_tb_val:
+        en = value_at(tv_tb_en, ts)
+        if en == '1':
+            vv = value_at(tv_tb_val, ts)
+            if vv in ('0','1'):
+                return vv
+    return vb
 
-    # 数据/奇偶位区间
-    if rnw == '1':  # READ
-        data_rng, par_rng = (14,46), (46,47)
-        data_bits = decode_bits_at(fedges, tv[".swdio"], data_rng[0], data_rng[1])
-        par_bit   = decode_bits_at(fedges, tv[".swdio"], par_rng[0], par_rng[1])
-        verdict   = "READ_OK" if ack_ok else ("READ_WAIT/FAULT" if ack_str in ("010","100") else "READ(?)")
-    else:           # WRITE
-        data_rng, par_rng = (15,47), (47,48)
-        data_bits = decode_bits_at(fedges, tv[".mosi"],  data_rng[0], data_rng[1])
-        par_bit   = decode_bits_at(fedges, tv[".mosi"],  par_rng[0], par_rng[1])
-        verdict   = "WRITE_OK" if ack_ok else ("WRITE_WAIT/FAULT" if ack_str in ("010","100") else "WRITE(?)")
+def decode_req_from_mosi(cycles, start_idx, tv_mosi):
+    bits = [value_at(tv_mosi, pos_ts(cycles, start_idx, i)) for i in range(2, 10)]
+    val, ok = bits_lsb_first_to_int(bits)
+    return bits, val, ok
 
-    data_val, data_ok = bits_lsb_first_to_int(data_bits)
-    par_val = par_bit[0] if par_bit else 'x'
-    par_ok  = (ack_ok and data_ok and par_val in ('0','1')
-               and int(par_val) == parity_expected_32(data_val))
-    data_txt = f"0x{data_val:08X}" if (ack_ok and data_ok) else "—"
-    par_txt  = f"{par_val}/" + ("OK" if par_ok else "ERR" if (ack_ok and data_ok and par_val in ('0','1')) else "?")
+def decode_ack(cycles, start_idx, tv_swdio, tv_tb_en=None, tv_tb_val=None):
+    b0 = target_bit_at(cycles, start_idx, 11, tv_swdio, tv_tb_en, tv_tb_val)
+    b1 = target_bit_at(cycles, start_idx, 12, tv_swdio, tv_tb_en, tv_tb_val)
+    b2 = target_bit_at(cycles, start_idx, 13, tv_swdio, tv_tb_en, tv_tb_val)
+    return [b0,b1,b2], f"{b2}{b1}{b0}"
 
-    # 视角派生：host_tv / tgt_tv / bus_tv
-    tv_oe = ref_to_tv.get(oe_name, []) if oe_name else None
-    host_tv = derive_host_tv(tv[".swdio"], tv[".mosi"], tv_oe, fedges=fedges, rnw=rnw, ack_ok=ack_ok)
-    tgt_tv  = derive_target_tv(tv[".swdio"], host_tv, fedges=fedges)
-    bus_tv  = tv[".swdio"]
+def infer_rnw(tv_rnw, cycles, start_idx):
+    if not tv_rnw:
+        return None
+    v = value_at(tv_rnw, pos_ts(cycles, start_idx, 0))
+    return v if v in ('0','1') else None
 
-    # 准备绘图
-    title_map = dict(host="Host view (OE→Z)", target="Target view", bus="Bus view (wire)")
-    out_dir   = figdir / f"png_{view}"
-    out_dir.mkdir(exist_ok=True)
-    fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
+# ===== RAW plot =====
+def plot_raw(vcd_path: Path, outdir: Path, lanes):
+    xmin, xmax = collect_time_range([tv for _, tv in lanes])
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    # 区块着色 + 标签（READ 无 TA2）
-    for (b0,b1,lab) in [(0,2,"PAD"), (2,10,"REQ"), (10,11,"TA1"), (11,14,"ACK")]:
-        label_zone(ax, fedges, b0, b1, lab, ZONE_CLR[lab])
-    if rnw != '1':
-        label_zone(ax, fedges, 14, 15, "TA2", ZONE_CLR["TA2"])
-    label_zone(ax, fedges, data_rng[0], data_rng[1], "DATA", ZONE_CLR["DATA"])
-    label_zone(ax, fedges, par_rng[0],  par_rng[1],  "PAR",  ZONE_CLR["PAR"])
-    ax.axvline(fedges[0],  linewidth=0.8, linestyle="--", alpha=0.5, color="#666")
-    ax.axvline(fedges[48], linewidth=0.8, linestyle="--", alpha=0.5, color="#666")
-
-    # 要画的轨：SCK/RST/RNW + 视角 DIO
-    lanes = [
-        (".sck",  ref_to_tv[names[".sck"]], "sck"),
-        (".rst_n",ref_to_tv[names[".rst_n"]] if names[".rst_n"] else [], "rst_n"),
-        (".rnw",  ref_to_tv[names[".rnw"]] if names[".rnw"] else [], "rnw"),
-    ]
-    if view == "host":
-        lanes.append(("host", host_tv, "swdio_host"))
-    elif view == "target":
-        lanes.append(("target", tgt_tv, "swdio_tgt"))
-    elif view == "bus":
-        lanes.append((".swdio", bus_tv, "swdio_bus"))
-    else:  # all
-        lanes += [("host", host_tv, "swdio_host"),
-                  ("target", tgt_tv, "swdio_tgt"),
-                  (".swdio", bus_tv, "swdio_bus")]
-
-    # 画轨
+    fig, ax = plt.subplots(figsize=(14, 0.9 + 0.75 * max(1, len(lanes))), dpi=150)
     yoff = 0.0
-    for _, tvsig, label in lanes:
-        if tvsig:
-            t, y = tv_to_step(tvsig, t_end=xmax)
+    for name, tv in lanes:
+        if tv:
+            t, y = tv_to_step_1bit(tv, t_end=xmax)
             if t:
-                ax.step(t, [yi + yoff for yi in y], where='post', linewidth=LW, clip_on=True)
-        ax.text(-0.01, yoff + TRACK_AMP*0.5, label,
-                transform=ax.get_yaxis_transform(), ha='right', va='center', fontsize=FONTSZ_LAB)
-        ax.hlines(yoff + TRACK_AMP*0.5, xmin, xmax, linestyles='dotted', linewidth=0.6, color='0.75')
+                ax.step(t, [yi + yoff for yi in y], where="post", linewidth=LW, clip_on=True)
+        ax.text(-0.01, yoff + TRACK_AMP * 0.5, name,
+                transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=FONTSZ_LAB)
+        ax.hlines(yoff + TRACK_AMP * 0.5, xmin, xmax, linestyles="dotted", linewidth=0.6, color="0.75")
         yoff += TRACK_STEP
 
-    # 顶部 bit 刻度
-    ax_top = ax.twiny()
-    ax_top.set_xlim(xmin, xmax)
-    ticks  = [ (fedges[b] + fedges[b+1]) / 2.0 for b in BIT_TICKS ]
-    labels = [ str(b) for b in BIT_TICKS ]
-    ax_top.set_xticks(ticks); ax_top.set_xticklabels(labels, fontsize=FONTSZ_TINY)
-    ax_top.set_xlabel("bit index within frame", fontsize=FONTSZ_LAB, labelpad=6)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(-0.2, (TRACK_STEP * (len(lanes) - 1)) + TRACK_AMP + 0.4)
+    ax.set_yticks([])
+    ax.set_title(f"{vcd_path.name} | RAW waveform (semantic lanes)", fontsize=FONTSZ_MAIN)
+    ax.set_xlabel("time (VCD timescale units)")
+
+    out = outdir / f"{vcd_path.stem}_RAW.png"
+    plt.tight_layout()
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
+    print(f"[OK] RAW  {vcd_path.name} -> {out}")
+
+# ===== Frame plot with zones =====
+def shade_zone(ax, cycles, start_idx, b0, b1, label, color):
+    x0 = t_edge(cycles, start_idx, b0)
+    x1 = t_edge(cycles, start_idx, b1)
+    ax.axvspan(x0, x1, color=color, alpha=0.15, zorder=-5)
+    xmid = (x0 + x1) / 2.0
+    ax.text(xmid, 0.97, label, transform=ax.get_xaxis_transform(),
+            ha="center", va="top", fontsize=FONTSZ_TINY, color="#1f4fbf", zorder=10)
+
+def plot_frame(vcd_path: Path, outdir: Path, lanes, cycles, start_idx,
+               tv_mosi, tv_swdio, tv_rnw=None, tv_tb_en=None, tv_tb_val=None,
+               mode="auto", idx=0):
+    xmin = t_edge(cycles, start_idx, 0)
+    xmax = t_edge(cycles, start_idx, 48)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Decide RNW
+    if mode == "read":
+        rnw = '1'
+    elif mode == "write":
+        rnw = '0'
+    else:
+        rnw = infer_rnw(tv_rnw, cycles, start_idx) or 'x'
+
+    _, req_val, req_ok = decode_req_from_mosi(cycles, start_idx, tv_mosi)
+    _, ack_str = decode_ack(cycles, start_idx, tv_swdio, tv_tb_en, tv_tb_val)
+    ack_ok = (ack_str == "001")
+
+    if rnw == '1':  # READ
+        data_bits = [target_bit_at(cycles, start_idx, i, tv_swdio, tv_tb_en, tv_tb_val) for i in range(14, 46)]
+        par_bit   = target_bit_at(cycles, start_idx, 46, tv_swdio, tv_tb_en, tv_tb_val)
+        tail_bit  = target_bit_at(cycles, start_idx, 47, tv_swdio, tv_tb_en, tv_tb_val)
+
+        data_val, data_ok = bits_lsb_first_to_int(data_bits)
+        par_ok = (ack_ok and data_ok and par_bit in ('0','1') and int(par_bit) == parity_even_32(data_val))
+
+        data_txt = f"0x{data_val:08X}" if (ack_ok and data_ok) else "—"
+        par_txt  = f"{par_bit}/" + ("OK" if par_ok else ("ERR" if (ack_ok and data_ok and par_bit in ('0','1')) else "?"))
+        verdict  = "READ_OK" if ack_ok else ("READ_WAIT/FAULT" if ack_str in ("010","100") else "READ(?)")
+        tail_txt = f" TAIL={tail_bit}"
+    else:           # WRITE
+        data_bits = [value_at(tv_mosi, pos_ts(cycles, start_idx, i)) for i in range(15, 47)]
+        par_bit   = value_at(tv_mosi, pos_ts(cycles, start_idx, 47))
+
+        data_val, data_ok = bits_lsb_first_to_int(data_bits)
+        par_ok = (ack_ok and data_ok and par_bit in ('0','1') and int(par_bit) == parity_even_32(data_val))
+
+        data_txt = f"0x{data_val:08X}" if (ack_ok and data_ok) else "—"
+        par_txt  = f"{par_bit}/" + ("OK" if par_ok else ("ERR" if (ack_ok and data_ok and par_bit in ('0','1')) else "?"))
+        verdict  = "WRITE_OK" if ack_ok else ("WRITE_WAIT/FAULT" if ack_str in ("010","100") else "WRITE(?)")
+        tail_txt = ""
+
+    fig, ax = plt.subplots(figsize=(14, 0.9 + 0.75 * max(1, len(lanes))), dpi=150)
+
+    yoff = 0.0
+    for name, tv in lanes:
+        if tv:
+            t, y = tv_to_step_1bit(tv, t_end=xmax)
+            if t:
+                ax.step(t, [yi + yoff for yi in y], where="post", linewidth=LW, clip_on=True)
+        ax.text(-0.01, yoff + TRACK_AMP * 0.5, name,
+                transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=FONTSZ_LAB)
+        ax.hlines(yoff + TRACK_AMP * 0.5, xmin, xmax, linestyles="dotted", linewidth=0.6, color="0.75")
+        yoff += TRACK_STEP
+
+    # Zones
+    shade_zone(ax, cycles, start_idx, 0,  2,  "PAD",  ZONE_CLR["PAD"])
+    shade_zone(ax, cycles, start_idx, 2,  10, "REQ",  ZONE_CLR["REQ"])
+    shade_zone(ax, cycles, start_idx, 10, 11, "TA1",  ZONE_CLR["TA1"])
+    shade_zone(ax, cycles, start_idx, 11, 14, "ACK",  ZONE_CLR["ACK"])
+    if rnw == '1':
+        shade_zone(ax, cycles, start_idx, 14, 46, "DATA", ZONE_CLR["DATA"])
+        shade_zone(ax, cycles, start_idx, 46, 47, "PAR",  ZONE_CLR["PAR"])
+        shade_zone(ax, cycles, start_idx, 47, 48, "TAIL", ZONE_CLR["TAIL"])
+    else:
+        shade_zone(ax, cycles, start_idx, 14, 15, "TA2",  ZONE_CLR["TA2"])
+        shade_zone(ax, cycles, start_idx, 15, 47, "DATA", ZONE_CLR["DATA"])
+        shade_zone(ax, cycles, start_idx, 47, 48, "PAR",  ZONE_CLR["PAR"])
 
     ax.set_xlim(xmin, xmax)
-    ax.set_ylim(-0.2, (TRACK_STEP * (len(lanes)-1)) + TRACK_AMP + 0.4)
+    ax.set_ylim(-0.2, (TRACK_STEP * (len(lanes) - 1)) + TRACK_AMP + 0.4)
     ax.set_yticks([])
-    ttl_view = title_map.get(view, view)
-    mode_tag = f"[mode={mode}] "
-    ax.set_title(f"{vcd_name} | Frame {idx:02d} @ {xmin} | {mode_tag}{ttl_view}", fontsize=FONTSZ_MAIN)
+    ax.set_title(f"{vcd_path.name} | Frame {idx:02d} | RAW + Zones", fontsize=FONTSZ_MAIN)
+    ax.set_xlabel("time (VCD timescale units)")
 
-    summary  = f"ACK={ack_str}  {verdict:>16}  DATA={data_txt}  PAR={par_txt}"
-    if not ref_to_tv.get(names.get(".rnw",""), []):
-        summary += "   (rnw=?)"
-    if view in ("host","target","all") and not (oe_name and ref_to_tv.get(oe_name, [])):
-        summary += "   [OE missing → window inference]"
+    req_txt = f"0x{req_val:02X}" if req_ok else "—"
+    summary = f"RNW={rnw} REQ={req_txt} ACK={ack_str} {verdict} DATA={data_txt} PAR={par_txt}{tail_txt}"
     fig.text(0.995, 0.995, summary, ha="right", va="top", fontsize=FONTSZ_LAB,
              bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.96, lw=0.8))
 
-    if debug_times:
-        b0 = (fedges[0]+fedges[1])//2
-        b14 = (fedges[14]+fedges[15])//2
-        b46 = (fedges[46]+fedges[47])//2
-        fig.text(0.01, 0.995, f"b0@{b0}  b14@{b14}  b46@{b46}",
-                 ha="left", va="top", fontsize=FONTSZ_TINY,
-                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.9, lw=0.6))
-
-    out = out_dir / f"{Path(vcd_name).stem}_F{idx:02d}_{view}.png"
+    out = outdir / f"{vcd_path.stem}_F{idx:02d}_ZONES.png"
     plt.tight_layout()
     plt.savefig(out, bbox_inches="tight")
     plt.close()
-    print(f"[OK] {vcd_name} F{idx:02d} [{view}] → {out}")
+    print(f"[OK] FRAME {vcd_path.name} -> {out}")
 
-# ===================== RAW 整体视图（无帧） =====================
-def plot_raw(figdir: Path, vcd_name: str, ref_to_tv, names, tv, view='bus'):
-    xmin = min(t for t,_ in tv[".sck"]) if tv[".sck"] else 0
-    xmax = max(t for t,_ in tv[".sck"]) if tv[".sck"] else xmin+100
+# ===== Frame alignment search (cycle-based) =====
+def frame_score(cycles, start_idx, tv_mosi, tv_swdio, tv_tb_en=None, tv_tb_val=None):
+    score = 0
+    for i in (0, 1):
+        if value_at(tv_mosi, pos_ts(cycles, start_idx, i)) == '0':
+            score += 1
+    bus10 = value_at(tv_swdio, neg_ts(cycles, start_idx, 10))
+    if bus10 == 'z':
+        score += 2
+    else:
+        if tv_tb_en and value_at(tv_tb_en, neg_ts(cycles, start_idx, 10)) == '0':
+            score += 1
+    _, ack_str = decode_ack(cycles, start_idx, tv_swdio, tv_tb_en, tv_tb_val)
+    if ack_str in ("001", "010", "100"):
+        score += 8
+    for bi in (11, 12, 13):
+        b = target_bit_at(cycles, start_idx, bi, tv_swdio, tv_tb_en, tv_tb_val)
+        if b in ('0','1'):
+            score += 1
+    return score, ack_str
 
-    out_dir = figdir / f"png_raw"
-    out_dir.mkdir(exist_ok=True)
-    fig, ax = plt.subplots(figsize=(12, 4.5), dpi=150)
+def find_best_frames_after_rst(cycles, rst_rises, tv_mosi, tv_swdio, tv_tb_en=None, tv_tb_val=None,
+                              max_shift=32, min_score=8):
+    out = []
+    n = len(cycles)
+    if n < 48:
+        return out
+    for t0 in rst_rises:
+        base = None
+        for i in range(n):
+            if cycles[i][0] > t0:
+                base = i
+                break
+        if base is None:
+            continue
+        best = None
+        for sh in range(0, max_shift):
+            s = base + sh
+            if s + 48 > n:
+                break
+            sc, ack = frame_score(cycles, s, tv_mosi, tv_swdio, tv_tb_en, tv_tb_val)
+            cand = (sc, ack, s)
+            if (best is None) or (cand[0] > best[0]):
+                best = cand
+        if best and best[0] >= min_score:
+            sc, ack, s = best
+            out.append((sc, ack, s, cycles[s][0]))
+    return out
 
-    lanes = [
-        (".sck",  ref_to_tv.get(names[".sck"], []),   "sck"),
-        (".rst_n",ref_to_tv.get(names[".rst_n"], []), "rst_n"),
-        (".mosi", ref_to_tv.get(names[".mosi"], []),  "mosi"),
-        (".swdio",ref_to_tv.get(names[".swdio"], []), "swdio_bus"),
-    ]
-
-    yoff = 0.0
-    for _, tvsig, label in lanes:
-        if tvsig:
-            t, y = tv_to_step(tvsig, t_end=xmax)
-            if t:
-                ax.step(t, [yi + yoff for yi in y], where='post', linewidth=LW, clip_on=True)
-        ax.text(-0.01, yoff + TRACK_AMP*0.5, label,
-                transform=ax.get_yaxis_transform(), ha='right', va='center', fontsize=FONTSZ_LAB)
-        ax.hlines(yoff + TRACK_AMP*0.5, xmin, xmax, linestyles='dotted', linewidth=0.6, color='0.75')
-        yoff += TRACK_STEP
-
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(-0.2, (TRACK_STEP * (len(lanes)-1)) + TRACK_AMP + 0.4)
-    ax.set_yticks([])
-    ax.set_title(f"{vcd_name} | RAW (no frame detected) | view={view}", fontsize=FONTSZ_MAIN)
-
-    out = out_dir / f"{Path(vcd_name).stem}_RAW.png"
-    plt.tight_layout()
-    plt.savefig(out, bbox_inches="tight")
-    plt.close()
-    print(f"[OK] {vcd_name} [RAW] → {out}")
-
-# ===================== 主流程 =====================
+# ===== Main =====
 def main():
-    # <<< 必须在函数第一行声明 global，避免“used prior to global declaration” >>>
-    global PARITY_MODE, TRACK_AMP, TRACK_STEP
-
-    ap = argparse.ArgumentParser(description="VCD → PNG (per-frame or RAW) with host/target/bus views")
-    ap.add_argument("--view", default=DEFAULT_VIEW, choices=("host","target","bus","all"),
-                    help="which view to render (frame-mode)")
-    ap.add_argument("--glob", default="*.vcd", help="VCD file glob (default: *.vcd)")
-    ap.add_argument("--parity", choices=("TB","SWD"), default=PARITY_MODE, help="parity mode")
-    ap.add_argument("--amp", type=float, default=TRACK_AMP, help="track amplitude (0..1)")
-    ap.add_argument("--step", type=float, default=TRACK_STEP, help="track step")
-    ap.add_argument("--mode", choices=("read","write","auto"), default=DEFAULT_MODE,
-                    help="render mode: read/write/auto (auto falls back to RAW if no frame detected)")
+    ap = argparse.ArgumentParser(description="Render RAW VCD waveforms + SWD zone annotation (semantic lanes).")
+    ap.add_argument("--glob", default="*.vcd", help="VCD glob")
+    ap.add_argument("--outdir", default="vcd_png", help="output directory root")
+    ap.add_argument("--mode", choices=("auto","read","write"), default="auto")
+    ap.add_argument("--default", action="store_true",
+                    help="use semantic lanes (clk/rst/rnw + host/target drive/sample)")
     ap.add_argument("--map", action="append", default=[],
-                    help="explicit mapping, e.g. sck=top.sck swdio=tb.swdio rst_n=tb.rst_n rnw=tb.rnw mosi=tb.mosi miso=tb.miso oe_n=tb.dut.swdio_oe_n_fix")
+                    help="explicit mapping: sck=... swdio=... mosi=... rst_n=... rnw=... tb_en=... tb_val=...")
+    ap.add_argument("--max_shift", type=int, default=32, help="alignment search shift (cycles)")
+    ap.add_argument("--min_score", type=int, default=8, help="minimum score to accept a frame")
+    ap.add_argument("--no_frames", action="store_true", help="only RAW, skip annotation")
     args = ap.parse_args()
 
-    # 更新全局参数
-    PARITY_MODE = args.parity
-    TRACK_AMP   = float(args.amp)
-    TRACK_STEP  = float(args.step)
-
-    # 解析 --map
     explicit = {}
     for m in args.map:
         if "=" in m:
             k, v = m.split("=", 1)
             explicit[k.strip()] = v.strip()
 
-    cwd = Path(".").resolve()
-    vcds = sorted(cwd.glob(args.glob))
+    vcds = sorted(Path(".").glob(args.glob))
     if not vcds:
-        print("[ERR] 当前目录没有匹配的 .vcd"); return
+        print("[ERR] no VCD matched")
+        return
+
+    outroot = Path(args.outdir)
+    out_raw = outroot / "raw"
+    out_fr  = outroot / "frames"
 
     for vcd_path in vcds:
         v = VCDVCD(str(vcd_path), store_tvs=True)
         ref_to_tv = build_ref_to_tv(v)
 
-        # 取核心信号；优先 --map 指定，否则后缀匹配
-        names = {}
-        names[".sck"]   = explicit.get("sck")   or pick_by_suffix(ref_to_tv, ".sck")
-        names[".rst_n"] = explicit.get("rst_n") or pick_by_suffix(ref_to_tv, ".rst_n")
-        names[".rnw"]   = explicit.get("rnw")   or pick_by_suffix(ref_to_tv, ".rnw")
-        names[".mosi"]  = explicit.get("mosi")  or pick_by_suffix(ref_to_tv, ".mosi")
-        names[".miso"]  = explicit.get("miso")  or pick_by_suffix(ref_to_tv, ".miso")
-        names[".swdio"] = explicit.get("swdio") or pick_by_suffix(ref_to_tv, ".swdio")
-        oe_name = explicit.get("oe_n")
-        if not oe_name:
-            for cand in OE_CANDIDATES:
-                cand_full = pick_by_suffix(ref_to_tv, cand)
-                if cand_full: oe_name = cand_full; break
+        sck_name   = explicit.get("sck")   or pick_by_suffix(ref_to_tv, ".sck")
+        rst_name   = explicit.get("rst_n") or pick_by_suffix(ref_to_tv, ".rst_n")
+        rnw_name   = explicit.get("rnw")   or pick_by_suffix(ref_to_tv, ".rnw")
+        mosi_name  = explicit.get("mosi")  or pick_by_suffix(ref_to_tv, ".mosi")
+        swdio_name = explicit.get("swdio") or pick_by_suffix(ref_to_tv, ".swdio")
+        tb_en_name = explicit.get("tb_en") or pick_by_suffix(ref_to_tv, ".tb_swdio_en")
+        tb_val_name= explicit.get("tb_val")or pick_by_suffix(ref_to_tv, ".tb_swdio_val")
 
-        # 打印实际选中的全名，和 GTKWave 对一下
-        print(f"[SEL] file  = {vcd_path.name}")
-        print(f"[SEL] sck   = {names['.sck']}")
-        print(f"[SEL] rst_n = {names['.rst_n']}")
-        print(f"[SEL] rnw   = {names['.rnw']}")
-        print(f"[SEL] mosi  = {names['.mosi']}")
-        print(f"[SEL] miso  = {names['.miso']}")
-        print(f"[SEL] swdio = {names['.swdio']} (bus)")
-        print(f"[SEL] oe_n  = {oe_name or '(none)'}")
+        print(f"[SEL] file={vcd_path.name}")
+        print(f"[SEL]  sck={sck_name}")
+        print(f"[SEL]  rst_n={rst_name or '(none)'}")
+        print(f"[SEL]  rnw={rnw_name or '(none)'}")
+        print(f"[SEL]  mosi={mosi_name or '(none)'}")
+        print(f"[SEL]  swdio={swdio_name or '(none)'}")
+        print(f"[SEL]  tb_en={tb_en_name or '(none)'}")
+        print(f"[SEL]  tb_val={tb_val_name or '(none)'}")
 
-        # 必要信号检查
-        if not names[".sck"] or not names[".swdio"]:
-            print(f"[ERR] {vcd_path.name}: 缺少 .sck 或 .swdio")
+        tv_sck   = ref_to_tv.get(sck_name, []) if sck_name else []
+        tv_rst   = ref_to_tv.get(rst_name, []) if rst_name else []
+        tv_rnw   = ref_to_tv.get(rnw_name, []) if rnw_name else []
+        tv_mosi  = ref_to_tv.get(mosi_name, []) if mosi_name else []
+        tv_swdio = ref_to_tv.get(swdio_name, []) if swdio_name else []
+        tv_tb_en = ref_to_tv.get(tb_en_name, []) if tb_en_name else []
+        tv_tb_val= ref_to_tv.get(tb_val_name, []) if tb_val_name else []
+
+        cycles = build_sck_cycles(tv_sck) if tv_sck else []
+        print(f"[INFO] {vcd_path.name}: sck_cycles={len(cycles)}")
+
+        # --- build semantic lanes ---
+        lanes = []
+        lanes.append(("clk (SCK)", tv_sck))
+        lanes.append(("rst_n", tv_rst))
+        lanes.append(("rnw (1=READ)", tv_rnw))
+
+        host_drive = derive_host_drive_on_wire_tv(tv_mosi, tv_swdio, tv_tb_en if tv_tb_en else None)
+        host_samp  = derive_sample_hold_tv_from_cycles(cycles, tv_swdio, edge="pos") if cycles else []
+        tgt_drive  = derive_target_drive_tv(tv_tb_en, tv_tb_val) if (tv_tb_en and tv_tb_val) else []
+        tgt_samp   = derive_sample_hold_tv_from_cycles(cycles, tv_swdio, edge="neg") if cycles else []
+
+        lanes.append(("host_drive (to SWDIO)", host_drive))
+        lanes.append(("host_sample (SWDIO @posedge)", host_samp))
+        lanes.append(("target_drive (TB)", tgt_drive))
+        lanes.append(("target_sample (SWDIO @negedge)", tgt_samp))
+
+        # RAW always
+        plot_raw(vcd_path, out_raw, lanes)
+
+        if args.no_frames:
             continue
 
-        tvmap = {k: ref_to_tv.get(n, []) if n else [] for k, n in names.items()}
-        sck_edges_all = rise_edges(tvmap[".sck"])
-        if len(sck_edges_all) < 49:
-            # 无法满足单帧 48bit 的最低需求 → 直接 RAW
-            print(f"[INFO] {vcd_path.name}: SCK 上升沿不足 49，改为 RAW 渲染")
-            outdir = vcd_path.parent / f"{vcd_path.stem}_frames"
-            outdir.mkdir(exist_ok=True)
-            plot_raw(outdir, vcd_path.name, ref_to_tv, names, tvmap, view="bus")
+        if not (tv_sck and tv_mosi and tv_swdio and cycles and len(cycles) >= 48):
+            print(f"[INFO] {vcd_path.name}: insufficient signals/cycles for frame annotation")
             continue
 
-        period = sck_edges_all[1] - sck_edges_all[0]
+        rst_rises = rise_edges(tv_rst) if tv_rst else []
+        if not rst_rises:
+            rst_rises = [-1]  # allow scan from start (special likely won't score)
 
-        # 用 rst_n↑ 分帧；没有 rst_n 就仅用开头一帧；auto 下若无法识别 ACK → RAW
-        frames = []
-        def ack_of(fedges):
-            bits = decode_bits_at(fedges, tvmap[".swdio"], 11, 14)
-            a0,a1,a2 = (bits+['x','x','x'])[:3]
-            return f"{a2}{a1}{a0}"
-        def score(fe):
-            ack = ack_of(fe)
-            return 2 if ack in ("001","010","100") else 0
+        best = find_best_frames_after_rst(
+            cycles, rst_rises, tv_mosi, tv_swdio,
+            tv_tb_en if tv_tb_en else None,
+            tv_tb_val if tv_tb_val else None,
+            max_shift=args.max_shift, min_score=args.min_score
+        )
 
-        if names[".rst_n"]:
-            rst_edges = rise_edges(tvmap[".rst_n"])
-            for t0 in rst_edges:
-                # 严格用 rst↑ 之后的第一拍；并做 ACK 合法性自动校正
-                edges0 = [e for e in sck_edges_all if e > t0]
-                cands = []
-                if len(edges0) >= 49: cands.append(edges0[:49])
-                if len(edges0) >= 50: cands.append(edges0[1:50])  # 向右平移 1 拍候选
-                if not cands: continue
-                best = max(cands, key=score)
-                frames.append(best)
+        if args.mode == "auto" and not best:
+            print(f"[INFO] {vcd_path.name}: no frame >=min_score (likely RAW-only capture)")
+            continue
 
-        if not frames:
-            # 没有 rst 分帧时，先取一帧尝试；若 ACK 不合法且 mode=auto → RAW
-            frames = [sck_edges_all[:49]]
-
-        outdir = vcd_path.parent / f"{vcd_path.stem}_frames"
-        outdir.mkdir(exist_ok=True)
-        print(f"[INFO] {vcd_path.name}: frames={len(frames)} view={args.view} mode={args.mode}")
-
-        # 如果是 auto 且所有候选帧的 ACK 都不是 001/010/100，则直接 RAW
-        if args.mode == "auto":
-            meaningful = any(score(fe) > 0 for fe in frames)
-            if not meaningful:
-                print(f"[INFO] {vcd_path.name}: 未识别到有效 ACK（001/010/100），自动降级为 RAW 渲染")
-                plot_raw(outdir, vcd_path.name, ref_to_tv, names, tvmap, view="bus")
-                continue
-
-        # 逐帧出图
-        views = [args.view] if args.view != "all" else ["host","target","bus"]
-        for i, fedges in enumerate(frames):
-            b0 = (fedges[0]+fedges[1])//2
-            b14 = (fedges[14]+fedges[15])//2
-            b46 = (fedges[46]+fedges[47])//2
-            print(f"[DEBUG] F{i:02d} start={fedges[0]}  b0@{b0}  b14@{b14}  b46@{b46}")
-            for vw in views:
-                plot_one_frame(outdir, vcd_path.name, ref_to_tv, names, tvmap, fedges, period, i,
-                               view=vw, oe_name=oe_name, mode=args.mode)
+        for i, (sc, ack, start_idx, start_time) in enumerate(best):
+            print(f"[INFO] {vcd_path.name}: frame#{i} score={sc} ack={ack} start_idx={start_idx} start_t={start_time}")
+            plot_frame(
+                vcd_path, out_fr, lanes, cycles, start_idx,
+                tv_mosi=tv_mosi, tv_swdio=tv_swdio, tv_rnw=tv_rnw,
+                tv_tb_en=(tv_tb_en if tv_tb_en else None),
+                tv_tb_val=(tv_tb_val if tv_tb_val else None),
+                mode=args.mode, idx=i
+            )
 
 if __name__ == "__main__":
     main()

@@ -30,20 +30,26 @@ Write-Host "=== [SPECIAL] 运行 $plus ==="
 
 Write-Host "`n==== ALL PASS ===="
 
-# === [PLOT] 生成 PNG 波形图（需要已安装 Python 和 vcdvcd:  pip install vcdvcd matplotlib） ===
+# === [PLOT] 生成 PNG 波形图（需要已安装 Python 和依赖：pip install vcdvcd matplotlib） ===
 # 选择 python 解释器
 $py = $null
 if (Get-Command python -ErrorAction SilentlyContinue) { $py = "python" }
 elseif (Get-Command py -ErrorAction SilentlyContinue) { $py = "py -3" }
-else { Write-Warning "找不到 python，可用 winget / 官网安装后再运行：pip install vcdvcd matplotlib" }
+else { Write-Warning "找不到 python；如需生成 PNG：pip install vcdvcd matplotlib" }
 
 if ($py) {
-    Write-Host "=== [PLOT] swd_read.vcd → READ 模式，三视角 ==="
-    & $py .\vcd_to_png.py --glob "swd_read.vcd"    --view all --mode read
+    if (-not (Test-Path ".\vcd_to_png.py")) {
+        Write-Warning "未找到 vcd_to_png.py，跳过 PNG 生成。"
+    } else {
+        Write-Host "=== [PLOT] swd_*.vcd → raw + frames(zones) ==="
+        & $py .\vcd_to_png.py --glob "swd_*.vcd" --default --mode auto
 
-    Write-Host "=== [PLOT] swd_write.vcd → WRITE 模式，三视角 ==="
-    & $py .\vcd_to_png.py --glob "swd_write.vcd"   --view all --mode write
-
-    Write-Host "=== [PLOT] swd_special.vcd → 自动判定（混合帧），三视角 ==="
-    & $py .\vcd_to_png.py --glob "swd_special.vcd" --view all --mode auto
+        Write-Host ""
+        Write-Host "输出目录："
+        Write-Host "  - vcd_png\raw\    （整段 RAW 波形）"
+        Write-Host "  - vcd_png\frames\ （识别到帧后输出 *_ZONES.png）"
+    }
 }
+
+Write-Host ""
+Write-Host "==== ALL PASS ===="

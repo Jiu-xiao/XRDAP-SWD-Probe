@@ -43,7 +43,7 @@ done
 echo "=== [SPECIAL] 运行 ${plus} ==="
 vvp build/sim_special.vvp ${plus}
 
-# 可选：生成 PNG（若检测到 python3/python 且本目录存在 vcd_to_png.py）
+# 可选：生成 PNG（若检测到 python 且本目录存在 vcd_to_png.py）
 PY=""
 if command -v python3 >/dev/null 2>&1; then
   PY="python3"
@@ -52,14 +52,13 @@ elif command -v python >/dev/null 2>&1; then
 fi
 
 if [[ -n "$PY" && -f "./vcd_to_png.py" ]]; then
-  echo "=== [PLOT] swd_read.vcd → READ 模式，三视角 ==="
-  "$PY" ./vcd_to_png.py --glob "swd_read.vcd"    --view all --mode read  || true
+  echo "=== [PLOT] swd_*.vcd → raw + frames(zones) ==="
+  "$PY" ./vcd_to_png.py --glob "swd_*.vcd" --default --mode auto || true
 
-  echo "=== [PLOT] swd_write.vcd → WRITE 模式，三视角 ==="
-  "$PY" ./vcd_to_png.py --glob "swd_write.vcd"   --view all --mode write || true
-
-  echo "=== [PLOT] swd_special.vcd → 自动判定（混合帧），三视角 ==="
-  "$PY" ./vcd_to_png.py --glob "swd_special.vcd" --view all --mode auto  || true
+  echo
+  echo "输出目录："
+  echo "  - vcd_png/raw/    （整段 RAW 波形）"
+  echo "  - vcd_png/frames/ （识别到帧后输出 *_ZONES.png）"
 else
   echo "提示：未检测到可用的 Python 或 vcd_to_png.py，跳过 PNG 生成。" >&2
   echo "如需生成图：pip install vcdvcd matplotlib" >&2

@@ -3,3 +3,4 @@ swd.gprj.user
 src/build/**
 *.vcd
 *.log
+src/swd-probe.v
