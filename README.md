@@ -182,6 +182,11 @@ python .\vcd_to_png.py --glob swd_*.vcd --default --mode auto
 - **正常模式 (`rst_n = 1`)**：`swclk = sck`，前端不对时钟做按位 gating。  
 - **raw 模式 (`rst_n = 0`)**：同样 `swclk = sck`，同时 `swdio = mosi` 直通。
 
+## MISO 行为
+
+- **正常模式 (`rst_n = 1`)**：`miso` 反射 `swdio`，主机通过 SPI MISO 采样 SWDIO 上的 ACK / DATA / PARITY。  
+- **raw 模式 (`rst_n = 0`)**：前端不驱动 `miso`（高阻），SPI 总线上的 MISO 可以被其他从设备复用；主机在 RAW 序列期间不应依赖从本前端读取任何有效数据。
+
 ---
 
 ## 实现概览 / Implementation
@@ -201,7 +206,8 @@ python .\vcd_to_png.py --glob swd_*.vcd --default --mode auto
 - **U3: 74x32**（4×OR）
   - OR 平面（`Q2|Q1`、`raw|req`、最终 `swdio_drive` 汇总等）
 - **U4: 74x126**（4×三态缓冲，OE=高有效）
-  - 将 `mosi` 三态驱动到 `swdio`，实现 TURN/Z 窗口与 READ 数据期释放
+  - 通道 1：将 `mosi` 三态驱动到 `swdio`，实现 TURN/Z 窗口与 READ 数据期释放
+  - 通道 2：在 `rst_n=1` 时把 `swdio` 缓冲到 `miso`；`rst_n=0`（RAW）时输出高阻，便于 SPI MISO 复用
 
 > 说明：这里使用 “74x” 作为家族占位符（HC/AHC/AC/LVC…均可）。  
 > 你后续可以用不同系列/不同厂家替换测试；只要**引脚语义**匹配即可。
@@ -224,9 +230,9 @@ python .\vcd_to_png.py --glob swd_*.vcd --default --mode auto
 
 最终：
 - `swdio_drive = raw_mode | req_drive | write_drive`
-- `swdio = swdio_drive ? mosi : Z`
-- `miso = swdio`
-- `swclk = sck`
+- `swdio       = swdio_drive ? mosi : Z`
+- `miso        = rst_n ? swdio : Z`  // RAW 模式下释放 MISO，便于复用
+- `swclk       = sck`
 
 #### 引脚语义化 RTL（用于对照原理图）
 
@@ -250,7 +256,7 @@ python .\vcd_to_png.py --glob swd_*.vcd --default --mode auto
 - `src/swd-probe.v`  
   - `swd_frontend_top`：实现“前 15 位有语义 + after-ACK 流”的前端行为；  
   - bit 分配与当前 testbench 保持一致：READ 数据从 **bit14** 开始、PARITY 在 **bit46**；WRITE 数据 **bit15..46**、PARITY 在 **bit47**；  
-  - RAW 模式：`rst_n=0` 时始终 `swdio=mosi` 直通。
+  - RAW 模式：`rst_n=0` 时始终 `swdio=mosi` 直通，同时前端释放 `miso`（高阻）；`rst_n=1` 时 `miso` 反射 `swdio`。
 
 - `src/testbench_read.v`  
   - READ + ACK=OK 的逐位检查与 VCD 生成（每位 log 对调试很关键）。

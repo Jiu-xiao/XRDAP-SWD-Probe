@@ -157,7 +157,6 @@ module swd_frontend_top (
     inout  tri  swdio
 );
     // 直连观测/时钟：现实中就是走线
-    assign miso  = swdio;
     assign swclk = sck;
 
     // 供电脚（仿真用常量；现实中接 3.3V / GND）
@@ -242,7 +241,7 @@ module swd_frontend_top (
     // U4: Tri-state driver for SWDIO (只用第1路，其余关断)
     ic_74xx126 U4_126 (
         .pin1_1G(swdio_drive),     .pin2_1A(mosi),             .pin3_1Y(swdio),
-        .pin4_2G(1'b0),            .pin5_2A(1'b0),             .pin6_2Y(),
+        .pin4_2G(rst_n),           .pin5_2A(swdio),            .pin6_2Y(miso),
         .pin7_GND(GND),
         .pin8_3Y(),                .pin9_3A(1'b0),             .pin10_3G(1'b0),
         .pin11_4Y(),               .pin12_4A(1'b0),            .pin13_4G(1'b0),

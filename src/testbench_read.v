@@ -56,14 +56,17 @@ module testbench_read;
             rnw         = 1;
 
             for (i=0; i<16; i=i+1) begin
-                @(negedge sck) mosi = pattern[i];
-                @(posedge sck) begin
-                    $display("[RAW] @%0t i=%0d mosi=%0b swdio=%0b miso=%0b", $time, i, mosi, swdio, miso);
-                    if (swclk !== sck) $fatal(1, "[RAW] SWCLK pass-through broken i=%0d", i);
-                    if (swdio !== mosi) $fatal(1, "[RAW] MOSI->SWDIO mismatch i=%0d mosi=%b swdio=%b", i, mosi, swdio);
-                    if (miso !== mosi)  $fatal(1, "[RAW] MISO mismatch i=%0d mosi=%b miso=%b", i, mosi, miso);
-                end
-            end
+    @(negedge sck) mosi = pattern[i];
+    @(posedge sck) begin
+        $display("[RAW] @%0t i=%0d mosi=%0b swdio=%0b miso=%0b", $time, i, mosi, swdio, miso);
+        if (swclk !== sck)
+            $fatal(1, "[RAW] SWCLK pass-through broken i=%0d", i);
+        if (swdio !== mosi)
+            $fatal(1, "[RAW] MOSI->SWDIO mismatch i=%0d mosi=%b swdio=%b", i, mosi, swdio);
+        if (miso !== 1'bz)
+            $fatal(1, "[RAW] MISO should be Z in RAW mode i=%0d miso=%b", i, miso);
+    end
+end
 
             @(negedge sck) mosi = 1'b0;
             @(posedge sck) rst_n = 1'b1;
