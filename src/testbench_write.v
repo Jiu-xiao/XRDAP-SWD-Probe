@@ -6,6 +6,7 @@ module testbench_write;
     wire miso;
     reg  rst_n = 0;
     reg  rnw   = 0;
+    reg  output_enable_n = 0;
 
     wire swclk;
     wire swdio;
@@ -18,7 +19,7 @@ module testbench_write;
 
     swd_frontend_top dut(
         .sck(sck), .mosi(mosi), .miso(miso),
-        .rst_n(rst_n), .rnw(rnw),
+        .rst_n(rst_n), .rnw(rnw), .output_enable_n(output_enable_n),
         .swclk(swclk), .swdio(swdio)
     );
 

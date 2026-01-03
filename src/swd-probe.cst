@@ -20,3 +20,6 @@ IO_PORT "swclk"  IO_TYPE=LVCMOS33 DRIVE=8;
 
 IO_LOC  "swdio"  46; 
 IO_PORT "swdio"  IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+IO_LOC  "output_enable_n"  10;
+IO_PORT "output_enable_n"  IO_TYPE=LVCMOS33 PULL_MODE=UP;

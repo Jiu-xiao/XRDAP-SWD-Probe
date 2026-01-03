@@ -6,6 +6,7 @@ module testbench_read;
     wire miso;
     reg  rst_n = 0;
     reg  rnw   = 1;
+    reg  output_enable_n = 0;
 
     wire swclk;
     wire swdio;
@@ -18,7 +19,7 @@ module testbench_read;
 
     swd_frontend_top dut(
         .sck(sck), .mosi(mosi), .miso(miso),
-        .rst_n(rst_n), .rnw(rnw),
+        .rst_n(rst_n), .rnw(rnw), .output_enable_n(output_enable_n),
         .swclk(swclk), .swdio(swdio)
     );
 
@@ -58,6 +59,7 @@ module testbench_read;
             for (i=0; i<16; i=i+1) begin
     @(negedge sck) mosi = pattern[i];
     @(posedge sck) begin
+        #0;
         $display("[RAW] @%0t i=%0d mosi=%0b swdio=%0b miso=%0b", $time, i, mosi, swdio, miso);
         if (swclk !== sck)
             $fatal(1, "[RAW] SWCLK pass-through broken i=%0d", i);

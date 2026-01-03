@@ -6,6 +6,7 @@ module testbench_special;
     wire miso;
     reg  rst_n = 0;
     reg  rnw   = 0;
+    reg  output_enable_n = 0;
 
     wire swclk;
     wire swdio;
@@ -16,7 +17,7 @@ module testbench_special;
 
     swd_frontend_top dut(
         .sck(sck), .mosi(mosi), .miso(miso),
-        .rst_n(rst_n), .rnw(rnw),
+        .rst_n(rst_n), .rnw(rnw), .output_enable_n(output_enable_n),
         .swclk(swclk), .swdio(swdio)
     );
 
@@ -31,6 +32,7 @@ module testbench_special;
 
             for (i=0; i<n; i=i+1) begin
                 @(posedge sck);
+                #0;
                 $display("[RAW %s] @%0t cyc=%0d swclk=%0b swdio=%0b mosi=%0b miso=%0b",
                          tag, $time, i, swclk, swdio, mosi, miso);
             end
@@ -43,6 +45,7 @@ module testbench_special;
             tb_swdio_en = 1'b0;
             for (i = 0; i < n; i = i + 1) begin
                 @(posedge sck);
+                #0;
                 $display("[RAW IDLE] @%0t cyc=%0d swdio=%0b", $time, i, swdio);
             end
         end
